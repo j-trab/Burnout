@@ -1,0 +1,890 @@
+---
+title: "BURNOUT IN THE WORKPLACE"
+author: "Jacopo Trabona"
+output: hrbrthemes::ipsum_pdf
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      eval = TRUE, error = FALSE, cache = TRUE, 
+                      dev = "cairo_pdf")
+```
+
+```{r message = FALSE, echo=FALSE}
+library(hrbrthemes) 
+library(ggplot2) 
+library(Cairo) 
+library(extrafont)
+extrafont::loadfonts()
+```
+
+# Introduction
+
+__Burnout__, as defined by Merriam-Webster, is the _exhaustion of physical or emotional strength or motivation usually as a result of prolonged stress or frustration_. In recent years, __burnout__ has become a steady concern for companies and businesses, in that it appears to affect the mental health of a growing number of employees worldwide, and - accordingly - their productivity in the workplace.
+
+In the context of the current pandemic, which is very likely to be exacerbating this phenomenon’s grip, HackerEarth launched a machine learning competition, which focused on predicting the __burnout rate__ in a given - and fairly large - sample of employees. 
+
+The __7__ __independent variables__ that were included in the dataset (and which can be used for prediction) are date of joining, gender, company type, WFH setup availability, designation, resource allocation, and mental fatigue score. Most of their names are self-explanatory, aside from __Designation__ (which essentially ranks employees' positions), __Resource Allocation__, which basically stands for working hours, and __WHF Setup Availability__, which specifies whether working from home is available for the observed employees. 
+
+In this report, we will be using HackerEarth dataset, not only to predict employees' __burnout rate__, but also to acquire a series of insights and other potentially influential components. 
+
+Finally, we will briefly propose an alternative use of the aforementioned dataset, namely that of predicting the __Mental Fatigue Score__ of the surveyed employees. 
+
+# Methods and Analysis
+
+## Install and Data Cleansing
+We start by importing the dataset, which we previously downloaded and copied to our working directory. 
+
+```{r echo = TRUE, eval=TRUE, results="hide"}
+#IMPORTING DATASET 
+
+#Identify data file
+filename <- "train.csv"
+dir <- "/Users/jacopotrabona/Downloads/burnout/upload"
+fullpath <- file.path(dir, filename)
+
+#Copy data file into project directory
+file.copy(fullpath, "train.csv")
+
+#Load data set 
+if(!require(tidyverse)) install.packages("tidyverse")
+library(tidyverse)
+
+dat <- read_csv("train.csv")
+
+```
+
+\pagebreak
+
+
+Then, we install and load the required packages. 
+
+
+```{r message = FALSE}
+#REQURED PACKAGES
+
+#Install required packages 
+if(!require(tidyverse)) install.packages("tidyverse")
+if(!require(caret)) install.packages("caret")
+if(!require(skimr)) install.packages("skimr")
+if(!require(hrbrthemes)) install.packages("hrbrthemes")
+if(!require(ggcorrplot)) install.packages("ggcorrplot")
+if(!require(gam)) install.packages("gam")
+if(!require(randomForest)) install.packages("randomForest")
+if(!require(ggpubr)) install.packages("ggpubr")
+
+#Load required packages
+library(tidyverse)
+library(caret)
+library(skimr)
+library(ggcorrplot)
+library(randomForest)
+library(hrbrthemes)
+library(ggpubr)
+```
+
+
+
+Now we are ready to start exploring our dataset, which has __9__ variables and __22750__ observations. 
+
+For convenience, here we do not show the __Employee ID__ variable, in that it won't be useful for the purpose of both our analysis and our machine learning task.  
+
+```{r echo=FALSE}
+#Head of the dataset
+dat %>% select(!`Employee ID`) %>% head() %>% knitr::kable()
+
+
+```
+
+As we glance at the first rows, we promptly stumble upon several __missing values__, which we later understand to be slightly more than __20%__ of the total entries. 
+
+Surprisingly, __1124__ of them (which R codifies as __NAs__) are in the __Burn Rate__ column, the dependent variable we eventually need to predict.
+
+```{r echo=FALSE, results="hide"}
+#Number of NAs across columns
+#Identify NAs
+is.na(dat)
+
+#Number of NAs
+sum(is.na(dat))
+
+#NAs are 20.31648 % of our data 
+(4622 * 100) / 22750
+
+#Number of NAs across columns
+colSums(is.na(dat))
+
+```
+
+Thus, we __remove__ these __missing values__.
+
+```{r echo=TRUE}
+#Remove observations with NAs in the Burn Rate column
+newdat <- dat[!is.na(dat$`Burn Rate`),]
+```
+
+However, we are still left with __3223 NAs__, which amount to nearly __15%__ of our data. 
+
+Additionally, only __187__ of them spread across the same rows, implying that, were we to remove all of them, we would be left with about __77%__ of our original data. 
+
+Can we afford that? Our dataset is not very large, so we may risk to produce a series of biased models, which may perform optimally only when compared to the observed outcomes in our dataset. 
+
+\pagebreak
+
+We thereby need to choose between three main options: we can __omit__ the rows containing missing values altogether; we can __impute__ all missing values using techniques such as Knn or bagging; or we can split our dataset so that to keep the test set devoid of missing values, while imputing the remaining missing values in the training set. 
+
+Prior to taking a definitive decision, we did some quick trials and noticed that both the 2nd and 3d option led to somewhat unstable models. This might be due to the fact that the remaining __NAs__ are located in the __Resource Allocation__ and __Mental Fatigue Score__ columns, namely the most significant - and most correlated - variables for the purposes of our prediction. 
+
+```{r echo=TRUE}
+#Columns with NAs
+colSums(is.na(newdat))
+```
+
+Furthermore, these approaches might perform better when applied to __classification__ tasks, but, since what we are faced with is a __regression problem__, we will opt for the first option and use __repeated k-fold cross validation__ to tackle the small size of our dataset. 
+
+```{r echo=FALSE, results="hide"}
+#Columns with NAs
+colSums(is.na(newdat))
+
+#Number of observations with NAs in both Resource Allocation and Mental Fatigue 
+is.na(newdat) %>% 
+  as.data.frame() %>% 
+  filter(`Resource Allocation` == TRUE & `Mental Fatigue Score` == TRUE) %>%
+  nrow()
+
+#Observations still containing missing values are approx. 14%
+((3223 - 187) * 100) / 21626
+
+#Correlation between Burn Rate and Mental Fatigue Score
+cor(newdat$`Mental Fatigue Score`, newdat$`Burn Rate`, use = "complete.obs", 
+    method = "spearman")
+
+#Correlation between Burn Rate and Resource Allocation
+cor(newdat$`Resource Allocation`, newdat$`Burn Rate`, use = "complete.obs", 
+    method = "spearman")
+```
+
+
+
+Thus, we __omit__ all rows containing missing values, by using na.omit().
+
+```{r echo=TRUE, results='hide'}
+#Omit row containing missing values 
+newdat <- na.omit(newdat)
+```
+
+## Exploratory Data Analysis (EDA)
+
+```{r echo=FALSE, results="hide"}
+#Dataset summary statistics 
+summary(newdat)
+```
+Aside from the __Employee ID__ variable, our dataset comprises __8 variables__ we need to explore. 
+
+We start with __Burn Rate__, a numerical discrete variable where values span a range from 0.00 to 1.00.
+
+```{r echo=FALSE, fig.height=3.5}
+
+newdat %>% ggplot(aes(`Burn Rate`)) +
+  geom_histogram(binwidth = 0.01, colour = "dodgerblue3", 
+                 alpha = 0.55) +
+  theme_ipsum()
+```
+
+
+Now, by using a binwidth of 0.1, we plot another histogram to get a better understanding of __Burn Rate__ __distribution__, which is approximately __normal__, with __mean__ __0.4524443__ and __sd__ __0.1978476__. 
+
+
+```{r echo=FALSE, fig.height=3.6}
+#Burn Rate distribution (0.1)
+newdat %>% ggplot(aes(`Burn Rate`)) +
+  geom_histogram(binwidth = 0.1, colour = "dodgerblue3", alpha = 0.45) +
+  geom_vline(xintercept = 0.4524443, alpha = 0.8, size = 1, 
+             linetype = "dotted", color = "black") +
+  theme_ipsum()
+```
+
+Then, we have our __independent variables__. Three of them, __Gender__, __Company Type__ and __WFH Setup Available__ are categorical, with only two levels. Three of them, __Designation__, __Resource Allocation__, and __Mental Fatigue Score__, are numerical with discrete values, and all are __positively correlated__ with __Burn Rate__. Specifically, __Mental Fatigue Score__, has a remarkably high correlation coefficient, __0.9437024__.
+
+```{r echo=FALSE, eval=F }
+
+#Mental Fatigue Score
+newdat %>% ggplot(aes(`Mental Fatigue Score`, `Burn Rate`)) +
+  geom_boxplot(alpha=0.5) +
+  geom_jitter(color="black", size = 0.4, alpha = 0.05) +
+  theme_ipsum() +
+  scale_fill_brewer(palette="Dark1") +
+  theme(legend.position = "none") 
+
+
+#Resource Allocation
+newdat %>% ggplot(aes(`Resource Allocation`, `Burn Rate`)) +
+  geom_boxplot(alpha=0.5) +
+  geom_jitter(color="black", size = 0.4, alpha = 0.05) +
+  theme_ipsum() +
+  scale_fill_brewer(palette="Dark1") +
+  theme(legend.position = "none")
+
+
+#Designation 
+newdat %>% ggplot(aes(Designation, `Burn Rate`)) +
+  geom_boxplot(alpha=0.5) +
+  geom_jitter(color="black", size = 0.4, alpha = 0.05) +
+  theme_ipsum() +
+  scale_fill_brewer(palette="Dark1") +
+  theme(legend.position = "none") 
+```
+
+
+
+```{r echo=FALSE, results="hide"}
+#Study of correlations
+
+#Correlations between continuous variables
+correlations <- cor(newdat[,6:9], use = "pairwise.complete", 
+                    method = "spearman")
+```
+
+```{r echo=FALSE, fig.height=4.1}
+#Correlations Plot
+ggcorrplot(corr = correlations, colors = c("gold3", "white", 
+                                           "dodgerblue3")) +
+  theme_ipsum() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1, size = 9),
+        axis.text.y = element_text(hjust = 1, vjust = 1, size = 9),
+        legend.title = element_text(size = 9),
+        legend.text = element_text(size = 7),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+```
+
+\pagebreak
+
+The remaining variable, __Date of Joining__, has a very short range, implying that all observed employees were surveyed only in year 2008. Our assumption is that this is too short of a span to have a meaningful, causal relationship with employees burnout rate. We confirm this by graphing a scatter plot of means of __Burn Rate__ values (grouped by Date of Joining) and by fitting a __loess__ regression line through them. 
+
+```{r echo=FALSE, fig.height=3.6}
+#Date of Joining means
+newdat %>% group_by(`Date of Joining`) %>%
+  summarise(Mean_Burn_Rate = mean(`Burn Rate`)) %>%
+  ggplot(aes(`Date of Joining`, Mean_Burn_Rate)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(color = "dodgerblue3") +
+  theme_ipsum()
+```
+
+Now we proceed by exploring the relationship of our __categorical variables__ with __Burn Rate__ by using a series of __box plots__.
+
+
+```{r echo=FALSE, include=FALSE}
+#Gender 
+gender_bxp <- ggboxplot(newdat, x = "Gender", y = "Burn Rate",
+                        color = "Gender", palette = "jco") + 
+  theme_ipsum(base_size = 8, caption_size = 6) + theme(legend.position = "none")
+ 
+gender_bxp
+
+#Company type 
+company_bxp <- ggboxplot(newdat, x = "Company Type", y = "Burn Rate",
+                        color = "Company Type", palette = "jco") + 
+  theme_ipsum(base_size = 8, caption_size = 6) + theme(legend.position = "none")
+
+company_bxp
+
+#WFH
+WFH_bxp <- ggboxplot(newdat, x = "WFH Setup Available", y = "Burn Rate",
+                        color = "WFH Setup Available", palette = "jco") + 
+  theme_ipsum(base_size = 8, caption_size = 6) + theme(legend.position = "none")
+
+WFH_bxp
+```
+
+```{r echo=FALSE, fig.height=4}
+ggarrange(gender_bxp, company_bxp, WFH_bxp + theme_ipsum(base_size = 8, 
+                                                         caption_size = 6), 
+          legend = "none",
+          ncol = 3, nrow = 1)
+
+```
+
+We notice that both __Gender__ and __WHF__ appear to affect employees' burnout rate. The __Company Type__ seems to be less relevant, and yet we will include it anyway, since we are going to use methods that are capable of accounting for its poor influence on our depended variable. 
+
+We also notice the presence of a series of __outliers__ - as we did for our numerical variables in a series of box plots we decided not to display. Thus, we may be tempted to tackle them by using techniques such as __robust scaling__, which requires our variables to be converted to numerical. However, prior to writing this report, we did some trials using __one-hot encoding__, and the marginal improvements obtained in models such as linear regression were outrun by the drawbacks we obtained in other models, such as Random Forest. 
+
+Thus, additionally considering the short range of our values, we will thereby either use __standardization__ for our numerical variables, or algorithms that are inherently more __robust__ to the effect of outliers. 
+
+## Preprocessing
+
+Before we proceed to actually building our models, we need to exclude __Date of Joining__ and re-code the names of the other columns, since they appear to be in a format that might prove problematic for some of the algorithms - Knn in particular. 
+
+
+```{r echo=TRUE}
+
+#DATA FORMATTING
+
+#Drop Id and Date of Joining variables
+newdat_good <- newdat[,3:9] %>% as.data.frame()
+
+#Re-code dataframe names
+newnames <- c("Gender", "Company_Type",
+              "WFH_Setup_Available", "Designation", "Resource_Allocation",
+              "Mental_Fatigue_Score", "Burn_Rate")
+
+oldnames <- c("Gender", "Company Type",
+             "WFH Setup Available", "Designation", "Resource Allocation",
+             "Mental Fatigue Score", "Burn Rate")
+
+t <- newdat_good %>% 
+  rename_with(~ newnames[which(oldnames == .x)], .cols = oldnames)
+```
+
+Then, we are ready to __split our__ data into __train__ and __test__ set. We use a conservative __20/80 %__ split, since, despite ending up with a somewhat small train set, we still want to have a relevant portion of the data to properly evaluate the __flexibility__ of our models. As previously stated, we will later use __repeated k-fold cross validation__ on the train set to tackle the limitations imposed by its size. 
+
+```{r echo=TRUE}
+#DATA SPLITTING
+
+#Set.seed
+set.seed(1234, sample.kind = "Rounding")
+
+#Create test index for data splitting
+tst_index <- createDataPartition(t$Burn_Rate, times = 1, p = 0.2, list = FALSE)
+
+#Create train set
+train_set <- t %>% slice(-tst_index)
+
+#Create test set
+test_set <- t %>% slice(tst_index)
+
+```
+
+Now, we still have to preprocess our __categorical variables__. We could use one hot encoding for this specific purpose, but, as previously stated, we rather opt for leveraging R functionality by converting our categorical values to __factors__. 
+
+```{r echo=TRUE, results="hide"}
+#PRE-PROCESSING
+
+#Re-code categorical variables
+
+#Show columns class
+sapply(train_set, class)
+
+#Convert characters to factors (train set)
+temp <- map_df(train_set[,1:3], as.factor) 
+
+train_set[,1:3] <- temp[,1:3]
+
+#Convert characters to factors (test set)
+temp1 <- map_df(test_set[,1:3], as.factor)
+
+test_set[,1:3] <- temp1[,1:3]
+
+```
+
+## Models 
+
+### 1 Linear Regression
+We are finally ready to build our models. Given the high correlation between our dependent variable and __Mental Fatigue Score__ we decide to start with a simple __linear regression__. From now on, given the distribution of the values in our dependent numerical variable, we will be using __root-mean-square error (RMSE)__ as our __evaluation metric__.
+
+```{r echo=TRUE, eval=FALSE}
+#Linear Regression
+
+#Set seed
+set.seed(1234, sample.kind = "Rounding")
+
+#Specify train controls
+control <- trainControl(method = "repeatedcv", p = .2, repeats = 4, number = 10)
+
+#Train linear model
+lm_fit <- train(Burn_Rate ~ Mental_Fatigue_Score, method = "lm", 
+                preProcess = c("center", "scale"), data = train_set, 
+                trControl = control)
+
+#Predict with linear model
+lm_pred <- predict(lm_fit, test_set)
+
+#Linear model RMSE
+RMSE(lm_pred, test_set$Burn_Rate)
+
+#Linear model CV results
+lm_fit$results
+```
+
+\pagebreak 
+
+We then create a __results table__ that stores both the __RMSES__ from our test set and the mean of those resulting from our __repeated 10 folds cross validation__ on the train set. We also include a __Tune__ column, which will help us keep track of the tuning process we will be undertaking.
+
+```{r echo=TRUE, eval=TRUE}
+#Create results table
+results <- data.frame(Method = "1 Linear Regression", Tune = "/",
+                      RMSE_CV = 0.06508212, RMSE_TEST = 0.06495063)
+
+results %>% knitr::kable()
+```
+
+For clarity, from now on, we will be showing only the lines of code we consider to be particularly relevant, as well as commenting only the coding and tuning methods that were useful in the process of building our final algorithm. For the full code, readers can refer to the __Appendix__.
+
+### 2 Multivariate Linear Regression
+
+Thus, we can proceed with a __multivariate linear regression__, for which - since not perfectly collinear between them - we use __all the predictors__ at our disposal. 
+
+```{r echo=FALSE, eval=FALSE}
+#Multivariate Linear Regression
+
+#Set seed
+set.seed(1234, sample.kind = "Rounding")
+
+#Specify train controls
+control <- trainControl(method = "repeatedcv", p = .2, repeats = 4, number = 10)
+```
+
+```{r echo=TRUE, eval=FALSE}
+#Train lm multivariate
+lm_fit_multivariate <- train(Burn_Rate ~ ., method = "lm", 
+                             preProcess = c("center", "scale"), 
+                             data = train_set, trControl = control)
+```
+
+```{r echo=FALSE, eval=FALSE}
+#Predict lm mutivariate  fit 
+lm_pred_multivariate <- predict(lm_fit_multivariate, test_set)
+
+#Lm multivariate RMSE 
+RMSE(lm_pred_multivariate, test_set$Burn_Rate)
+
+#CV results
+lm_fit_multivariate$results
+```
+
+```{r echo=FALSE, eval=TRUE}
+#Add row to results table
+results <- results %>% add_row(Method = "2 Multivariate Linear Regression",
+                               Tune = "/", RMSE_CV = 0.05576466, 
+                               RMSE_TEST = 0.05564016) 
+
+results %>% knitr::kable()
+```
+
+Our __RMSE__ did improve, but we can probably achieve better results by using more complex models.
+
+### 3 K Nearest Neighbors 
+
+We start with __K Nearest Neighbors (KNN)__. Firstly, in order to get a rough idea of its behavior, we implement __knn__ using __caret__ default tuning and bootstrapping validation options. Additionally we __do not__  __standardize__ our data, since, for KNN, it led to worse results on both our test set and across our cross validation folds. 
+
+```{r echo=FALSE, eval=FALSE}
+#KNN (Default Tune)
+
+#Set seed
+set.seed(1234, sample.kind = "Rounding")
+```
+
+```{r echo=TRUE, eval=FALSE}
+#Train KNN
+knn_fit <- train(Burn_Rate ~ ., method = "knn", data = train_set)
+```
+
+```{r echo=FALSE, eval=FALSE}
+#Predict with KNN 
+knn_pred <- predict(knn_fit, test_set)
+
+#KNN RMSE
+RMSE(knn_pred, test_set$Burn_Rate)
+
+#Access model fit 
+knn_fit
+
+#Plot k results
+ggplot(knn_fit, highlight = TRUE) +
+  theme_ipsum()
+
+#CV results
+knn_fit$results
+```
+
+```{r echo=FALSE, eval=TRUE}
+#Add row to results table
+results <- results %>% add_row(Method = "3 K-nearest Neighbors",
+                               Tune = "K = 9", RMSE_CV = 0.05724738,
+                               RMSE_TEST = 0.05423132) 
+                               
+results %>% knitr::kable()
+```
+
+### 4 K Nearest Neighbors (Optimized)
+Building on the best tune of the previous model, we fit __knn__ a second time, now testing values of __K__ between __8__ and __170__ and repeating __10 fold cross validation 4 times__ in order to pick the optimal one. 
+
+```{r echo=FALSE, eval=FALSE}
+#Optimized KNN
+
+#Set seed
+set.seed(1234, sample.kind = "Rounding")
+```
+
+```{r echo=T, eval=F}
+#Specify train controls
+control <- trainControl(method = "repeatedcv", p = .2, repeats = 4, number = 10)
+
+#Specify tuning parameters
+tunegrid <- data.frame(k = 8:170)
+
+#Train KNN 2nd
+knn_fit2 <- train(Burn_Rate ~ ., method = "knn", data = train_set, 
+                  tuneGrid = tunegrid, trControl=control)
+```
+
+```{r echo=F, eval=F}
+#Predict with KNN 2nd 
+knn_pred2 <- predict(knn_fit2, test_set)
+
+#KNN 2nd RMSE 
+RMSE(knn_pred2, test_set$Burn_Rate)
+
+#Access model results
+knn_fit2$results
+
+knn_fit2$bestTune
+
+knn_fit2$finalModel
+```
+
+```{r load myData, include=FALSE}
+load("~/projects/burnout/upload/burnout-code-final.RData")
+```
+
+```{r echo=F, eval=T, fig.height=3.8}
+#Plot k results
+ggplot(knn_fit2, highlight = TRUE) +
+  theme_ipsum()
+```
+
+From the plot above, we notice that the __RMSE__ reached a minimum at __K = 91__, and then started to increase again. 
+We thereby consider our __knn__ algorithm to be optimal, and consequently add a new entry to our results table. 
+
+\smallskip
+\smallskip
+\smallskip
+\smallskip
+\smallskip
+\smallskip
+\smallskip
+
+```{r echo=F, eval=T}
+#Add row to results table
+results <- results %>% add_row(Method = "4 K-nearest Neighbors (Optimized)",
+                               Tune = "K = 91", RMSE_CV = 0.05453934 ,
+                               RMSE_TEST = 0.05438856)
+
+results %>% knitr::kable()
+```
+
+\pagebreak 
+
+### 5 Locally weighted regression (Loess)
+Now, before proceeding to employing more complex algorithms, such as Random Forests, we will approach a simpler method, which is known to perform well with small-range data as ours, namely __locally weighted regression__. Its functioning is not dissimilar from __KNN__, but it is much quicker to train. In caret, it is also easy to implement, so we run it via the argument method __loess__ and tune it in order to pick the best value for __span__ (which is specified as a proportion). We also scale and center our numerical data, since it leads to marginally improved results.
+
+```{r echo=F, eval=F}
+#Locally Weighted Regression (loess)
+
+#Set seed
+set.seed(1234, sample.kind = "Rounding")
+```
+
+```{r echo=T, eval=F}
+#Specify train controls
+control <- trainControl(method = "repeatedcv", p = .2, repeats = 4, number = 10)
+
+#Specify tuning parameters
+tunegrid <- expand.grid(span = c(0.2, 0.3, 0.4, 0.5, 0.6), degree = 1)
+
+#Loess fit
+loess_fit <- train(Burn_Rate ~ ., method = "gamLoess", tuneGrid = tunegrid, 
+                   preProcess = c("center", "scale"), 
+                   trControl = control, data = train_set)
+```
+
+```{r echo=F, eval=F}
+#Predict lm mutivariate  fit 
+lm_pred_multivariate <- predict(lm_fit_multivariate, test_set)
+
+#Lm multivariate RMSE 
+RMSE(lm_pred_multivariate, test_set$Burn_Rate)
+
+#CV results
+lm_fit_multivariate$results
+```
+
+```{r echo=F, eval=T}
+#Add row to results table
+results <- results %>% add_row(Method = "5 Locally Weighted Regression",
+                               Tune = "Span = 0.2", RMSE_CV = 0.05454619,
+                               RMSE_TEST = 0.0543843)
+
+results %>% knitr::kable()
+```
+
+We can see how the results from __Loess__ are virtually identical to those of __KNN__, despite it being much __quicker__ to train and simpler to optimize.
+
+### 6 Random Forests 
+__Regression trees__, generally speaking, might be one of the obvious choices for our task, since they are expected to perform well with variables that are both numerical and categorical, in most of the cases, capable of dealing with both highly collinear values and outliers.
+
+However, the main problem we are faced with is the small size of data set, where regression trees might quickly start to overfit, thereby producing highly biased models. __Random Forests__, on the other hand, are specifically designed to solve these very issues, and, therefore, will prove to be an effective tool that we are now going to implement. 
+
+As with __KNN__, we first start running caret's random forest __rf__ with the default tuning and training control parameters.
+
+```{r echo=F, eval=F}
+#Random Forests (rf)
+
+#Set.seed
+set.seed(1234, sample.kind = "Rounding")
+```
+
+```{r echo=T, eval=F}
+#Train rf
+rf_fit <- train(Burn_Rate ~ ., method = "rf", data = train_set)
+```
+
+```{r echo=F, eval=F}
+#Predict with rf 
+rf_pred <- predict(rf_fit, test_set)
+
+#rf RMSE
+RMSE(rf_pred, test_set$Burn_Rate)
+```
+
+\pagebreak
+
+```{r echo=F, eval=T}
+#Add row to results table
+results <- results %>% add_row(Method = "6 Random Forests", 
+                               Tune = "Mtry = 2, Ntree = 500", 
+                               RMSE_CV = 0.05537689, RMSE_TEST = 0.05502211) 
+
+results %>% knitr::kable()
+```
+
+To our initial surprise, we see that __rf__ didn't performed as well as either __knn__ or __loess__. 
+However, this model is still sub-optimal, and was tuned using caret bootstrapping default control, which considering, the size of our train set, might lead to misleading outcomes.
+Thus, we proceed by accessing the training results more in detail, visualizing components such as __variable importance__ and __plotting__ the resulting __RMSEs__ against the mtry values that produced them.
+
+```{r echo=F, eval=F}
+#Access model results
+rf_fit$results
+
+rf_fit$resample
+
+rf_fit$bestTune
+
+rf_fit$finalModel
+```
+
+```{r echo=F, eval=F}
+#Access model's variable importance
+varImp(rf_fit, scale = FALSE)
+```
+
+```{r echo=F, eval=T, fig.height=3}
+#Plot mtryies against RMSEs
+ggplot(rf_fit, highlight = TRUE) +
+  theme_ipsum()
+```
+
+
+### Random Forests (Optimized)
+
+Hence, we proceed by effectively tuning our __random forests__ model. We apply 10 folds cross validation 4 times, train across all possible values of mtry, and increase the number of trees to grow to 1000. 
+
+```{r echo=F, eval=F}
+#Optimized Random Forest
+```
+
+```{r echo=T, eval=F}
+#Define train control
+control <- trainControl(method = "repeatedcv", p = .2, repeats = 4, number = 10,
+                        search = "grid")
+
+#Define train grid
+tunegrid <- data.frame(mtry = 1:6)
+
+#Set.seed
+set.seed(1234, sample.kind = "Rounding")
+
+#Train rf 2nd
+rf_fit_tune <- train(Burn_Rate ~ ., method = "rf", 
+                 data = train_set, ntree = 1000, tuneGrid = tunegrid, 
+                 trControl=control)
+
+#Predict with rf 2nd 
+rf_pred_tune <- predict(rf_fit_tune, test_set)
+
+```
+
+```{r echo=F, eval=F}
+#rf 2nd RMSE
+RMSE(rf_pred_tune, test_set$Burn_Rate)
+```
+
+```{r echo=F, eval=T}
+#Add entry to results table
+results <- results %>% add_row(Method = "7 Random Forests (Optimized)", 
+                               Tune = "Mtry = 3, Ntree = 1000", 
+                               RMSE_CV = 0.05435957, RMSE_TEST = 0.0537501) 
+
+results %>% knitr::kable()
+
+```
+
+We can see that this last model did indeed outperform the previous one - but also, __knn__ and __loess__.
+This is mainly due to the fact that, by implementing repeated __k-fold cross validation__, we were able to choose a better value for __mtry__, which eventually led to a __more flexible model__. 
+
+Eventually, we plot errors against Ntree and see that, by the time __rf__ grew the specified number of trees (Ntree = 1000), errors did in fact __stabilize__. 
+
+```{r echo=F, results="hide"}
+quartzFonts(avenir = c("Avenir Book", "Avenir Black", "Avenir Book Oblique", 
+                        "Avenir Black Oblique"))
+
+par(family = 'avenir')
+```
+
+```{r echo=F, eval=T, fig.align='center', fig.height=3.6}
+plot(rf_fit_tune$finalModel) 
+```
+
+We could try to grow an even larger number of trees, and use repeated k-fold cv to choose the best value among them, but the marginal improvements that we may - or may not - achieve, will be surely overshadowed by the cumbersome computational cost of such a process.
+
+We therefore consider our __Random Forests__ model to be optimized, and move on to create an __ensemble__ of our best performing algorithms. 
+
+### 7 Ensembles
+
+__Ensemble algorithms__, have gradually become a standard in many machine learning applications. The core idea is essentially that of __combining different ML methods__ in order to improve the flexibility of the final model, and - therefore - performances when applying it to unobserved new data. There are many techniques and methods for creating ensembles, which may vary significantly depending on the fields of application and the characteristics of the data they are confronted with.
+
+In our case, given the low dimensionality of our data set, and the relatively simple task we are called upon to perform, we won't venture in complex ensemble methods. We will rather __average the predictions__ of the algorithms we are going to combine.
+
+However, in order to choose the __best performing ensemble__, it would be unwise to simply use our test set. We will then use __repeated k-fold cross validation__ on the train set to do so, although that will require us to program a series of functions, specifically tailored to fulfill our task.
+
+The code is rather convoluted, so we decide to show the full steps.
+
+We start by creating __three functions__ for each one of the combinations we are going to train. The first one comprises predictions from our three best-performing algorithms ( __rf__, __knn__ and __loess__). Then, we progressively add __multivariate linear regression__ and __linear regression__. 
+
+```{r echo=T, eval=T}
+#ENSEMBLES
+
+#Create ensemble functions
+
+ensemble1 <- function(ts){
+  (predict(rf_fit_tune, ts) + 
+     predict(knn_fit2, ts) + 
+     predict(loess_fit, ts)) / 3
+}
+
+ensemble2 <- function(ts){
+  (predict(rf_fit_tune, ts) + 
+     predict(knn_fit2, ts) + 
+     predict(lm_fit_multivariate, ts) +
+     predict(loess_fit, ts)) / 4
+}
+
+ensemble3 <- function(ts){
+  (predict(rf_fit_tune, ts) + 
+     predict(knn_fit2, ts) + 
+     predict(lm_fit, ts) +
+     predict(lm_fit_multivariate, ts) +
+     predict(loess_fit, ts)) / 5
+}
+```
+
+\pagebreak
+
+Then, we proceed by creating an __ensemble list__, which we will later feed to sapply().
+
+```{r echo=T, eval=T}
+#Create ensemble list 
+ensembles_list <- list(ensemble1, ensemble2, ensemble3)
+```
+
+And by programming a __repeated (4 times) 10 fold cross validation__ function using our train set.
+
+```{r echo=T, eval=T}
+#Create repeated (4times) 10 fold cross validation function for our ensembles
+
+repeatedcv_ensembles <- function(ensemblef) {
+  mean(replicate(4, {
+    
+    folds <- createFolds(train_set$Burn_Rate, k = 10, list = TRUE, 
+                         returnTrain = TRUE)
+    res <- vector("numeric", 10)
+    for (i in 1:10) {
+      tr <- train_set[folds[[i]],]
+      ts <- train_set[-folds[[i]],]
+      
+      errors <- RMSE(ensemblef(ts), ts[,7]) 
+      res[i] <- errors
+      
+    }
+    mean(res)
+  }
+  )
+  )
+}
+```
+
+Now we are ready to set the seed and apply this function to all 3 ensembles we created.
+
+```{r echo=T, eval=T}
+#Set.seed
+set.seed(1234, sample.kind = "Rounding")
+
+#Apply repeated cross validation function to ensembles 
+sapply(ensembles_list, repeatedcv_ensembles)
+```
+
+The __first ensemble__ - the one comprising rf, knn, and loess - was the best performing one. 
+
+Finally, we can re-run it on the test set and add the resulting __RMSE__ to our final results table. 
+
+```{r echo=T, eval=T}
+#Re-run ensemble one on the test set
+ensemble1(test_set) %>% RMSE(., test_set$Burn_Rate)
+```
+
+\pagebreak
+
+```{r echo=F, eval=T}
+#Result table
+results <- results %>% add_row(Method = "8 Ensemble", 
+                               Tune = "Knn + Rf + Loess", 
+                               RMSE_CV = 0.05046548, RMSE_TEST = 0.05296494)
+
+results %>% knitr::kable()
+
+```
+
+# Results 
+
+The last model we presented, namely the __ensemble__ that combined our optimized __K-Nearest Neighbors__ , __Random Forests__, and __Locally Weighted Regression__ algorithms, is the one we pick as our __final model__. Of course, our decision is determined by the fact that it outperformed all the previous models we had built, on both the __test set__ and across the folds of our __repeated k-fold cross validation__. However, some considerations are in order. 
+
+The first is that, despite achieving the best result, the final __RMSE__ did not drop by a truly significant margin in our validation set. In other words, it did perform better then other models, but, considering the task at hands, it might not be a slight __improvement in the thousandths decimal place__ to really make the difference between employees that are likely to burnout and employees who are not.
+
+Employers might thus decide to opt for other algorithms, which are either easier to implement and interpret or simply __quicker__ to run. In our final ensemble, for instance, an important role was played by an __rf__ algorithm that took our Macbook Pro several hours to train. Other users might want to avoid such computational cost. 
+
+Accordingly, we think that a perfect candidate for such instances is __Locally Weighted Regression__, an algorithm that, in its caret implementation, was both quick and easy to train. Of course, future edits and applications will be limited to data that is very similar to ours.
+It is - in fact - primarily because of both the very low dimensionality and short range of our observed variables that __loess__ performed very well. If, for instance, a survey with continuous and wider-range values for variables such as Mental Fatigue Score were to be conducted, then other methods would likely have to be considered.
+
+# Conclusion
+Our final model achieved a low  __RMSE__, namely __0.0529649__. However, the biggest role in driving up the quality of our results was played by an independent variable, __Mental Fatigue Score__ which is very highly correlated with our outcome, __Burn Rate__. In fact, only by implementing a simple linear regression using the aforementioned variable we obtained an __RMSE__ of 0.0649506. 
+
+__Mental Fatigue Score__ is, indeed, a variable that, for the general public, might be almost tautologically associated with burnout, and, additionally, one that is not easy to report by employees themselves. Some employee, in fact, may not be able to identify it in a relevant manner, let alone rating it in a decimal scale. 
+
+Thus, a more interesting challenge might be that of predicting the __Mental Fatigue Score__ of an employee given the variables in our dataset - __Burnout Rate__, obviously, excluded. We actually did a quick trial to get an idea of the feasibility of this approach, and, by implementing __KNN__ with a swift sub-optimal tuning, we obtained an __RMSE__ of __1.129071__. Considering that __Mental Fatigue Score__ has a ten times bigger range of __Burnout Rate__ (0 - 10 and 0 - 1, respectively) this tells us that we might be on the right track, and that, by making use of a better tuning and more effective algorithms, might actually achieve a series of satisfactory results. 
+
+In conclusion, if we were to actually employ __ML__ as a practical tool to tackle the burnout in the workplace, two main actions would still be required. Firstly, a __much larger study__ would need to be undertaken, in order to build a more relevant sample size and a more extensive data set - with a specific focus on constructing an actually reliable date of joining variable. 
+Lastly, a __cutoff__ value for __Burnout__ (or __Mental Fatigue Score__) should be clearly established, in order to make employers able to implement practical policies, such as recommended holiday or mental health counseling. In this way, our __ML__ task would become a __classification problem__, and we would be able to actually inform effective decision-making. 
+
+
+
+
+\pagebreak
+
+
+
+# Appendix: All code for this report
+
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+
+```
